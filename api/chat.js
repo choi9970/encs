@@ -11,6 +11,13 @@ export default async function handler(req, res) {
     return sendJson(res, result.status, result.data);
   } catch (error) {
     console.error(error);
-    return sendJson(res, 500, { error: error.message || "서버 오류가 발생했습니다." });
+    return sendJson(res, 500, {
+      error: error.message || "서버 오류가 발생했습니다.",
+      errorCode: error.code || "SERVER_ERROR",
+      diagnosticId: error.diagnosticId || null,
+      apiKeyIndex: error.apiKeyIndex || null,
+      modelUsed: error.model || null,
+      httpStatus: error.httpStatus || null
+    });
   }
 }

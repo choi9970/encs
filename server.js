@@ -34,7 +34,14 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 404, { error: "Not found" });
   } catch (error) {
     console.error(error);
-    sendJson(res, 500, { error: error.message || "서버 오류가 발생했습니다." });
+    sendJson(res, 500, {
+      error: error.message || "서버 오류가 발생했습니다.",
+      errorCode: error.code || "SERVER_ERROR",
+      diagnosticId: error.diagnosticId || null,
+      apiKeyIndex: error.apiKeyIndex || null,
+      modelUsed: error.model || null,
+      httpStatus: error.httpStatus || null
+    });
   }
 });
 

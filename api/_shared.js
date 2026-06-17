@@ -15,11 +15,16 @@ export function getModel() {
 }
 
 export async function handleChatBody(body) {
+  const diagnosticId = createDiagnosticId();
   const apiKeys = getGeminiApiKeys();
   if (!apiKeys.length) {
     return {
       status: 400,
-      data: { error: "Vercel 환경변수 또는 .env 파일에 GEMINI_API_KEY 또는 GEMINI_API_KEYS를 설정해주세요." }
+      data: {
+        error: "Vercel 환경변수 또는 .env 파일에 GEMINI_API_KEY 또는 GEMINI_API_KEYS를 설정해주세요.",
+        errorCode: "CONFIG_MISSING_API_KEY",
+        diagnosticId
+      }
     };
   }
 
@@ -48,7 +53,7 @@ export async function handleChatBody(body) {
   }
 
   const prompt = buildPrompt(activity, history, industryResult.candidates);
-  const geminiResult = await callGemini(apiKeys, prompt);
+  const geminiResult = await callGemini(apiKeys, prompt, diagnosticId);
 
   return {
     status: 200,
@@ -115,7 +120,7 @@ export function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function callGemini(apiKeys, prompt) {
+async function callGemini(apiKeys, prompt, diagnosticId) {
   const model = getModel();
   const fallbackModel = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash";
   const models = [...new Set([model, fallbackModel].filter(Boolean))];
@@ -128,7 +133,11 @@ async function callGemini(apiKeys, prompt) {
 
     for (const candidateModel of models) {
       try {
-        const text = await callGeminiModel(apiKey, candidateModel, prompt);
+        const text = await callGeminiModel(apiKey, candidateModel, prompt, {
+          diagnosticId,
+          apiKeyIndex: keyIndex + 1,
+          model: candidateModel
+        });
         preferredKeyIndex = keyIndex;
         return {
           text,
@@ -138,6 +147,13 @@ async function callGemini(apiKeys, prompt) {
         };
       } catch (error) {
         lastError = error;
+        logGeminiError(error, {
+          diagnosticId,
+          apiKeyIndex: keyIndex + 1,
+          model: candidateModel,
+          retryable: isRetryableGeminiError(error.message),
+          timeout: isGeminiTimeoutError(error.message)
+        });
         if (isGeminiTimeoutError(error.message)) break;
         if (!isRetryableGeminiError(error.message)) throw error;
         break;
@@ -150,6 +166,10 @@ async function callGemini(apiKeys, prompt) {
   }
 
   throw lastError || new Error("Gemini API 호출에 실패했습니다.");
+}
+
+function createDiagnosticId() {
+  return `diag_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function getGeminiApiKeys() {
@@ -165,7 +185,7 @@ function getGeminiApiKeys() {
   return singleKey ? [singleKey] : [];
 }
 
-async function callGeminiModel(apiKey, model, prompt) {
+async function callGeminiModel(apiKey, model, prompt, context) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const controller = new AbortController();
   const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 18000);
@@ -195,9 +215,20 @@ async function callGeminiModel(apiKey, model, prompt) {
     });
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw new Error(geminiTimeoutMessage);
+      throw createAppError(geminiTimeoutMessage, {
+        code: "GEMINI_TIMEOUT",
+        diagnosticId: context.diagnosticId,
+        apiKeyIndex: context.apiKeyIndex,
+        model
+      });
     }
-    throw error;
+    throw createAppError("Gemini API 연결 중 네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.", {
+      code: "GEMINI_NETWORK_ERROR",
+      diagnosticId: context.diagnosticId,
+      apiKeyIndex: context.apiKeyIndex,
+      model,
+      causeMessage: error?.message
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -205,7 +236,15 @@ async function callGeminiModel(apiKey, model, prompt) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = data?.error?.message || "Gemini API 호출에 실패했습니다.";
-    throw new Error(toUserFacingGeminiError(message));
+    const code = classifyGeminiError(message, response.status);
+    throw createAppError(toUserFacingGeminiError(message, code), {
+      code,
+      diagnosticId: context.diagnosticId,
+      apiKeyIndex: context.apiKeyIndex,
+      model,
+      httpStatus: response.status,
+      causeMessage: message
+    });
   }
 
   const text = data?.candidates?.[0]?.content?.parts
@@ -214,10 +253,36 @@ async function callGeminiModel(apiKey, model, prompt) {
     .trim();
 
   if (!text) {
-    throw new Error("Gemini 응답이 비어 있습니다.");
+    throw createAppError("Gemini 응답이 비어 있습니다.", {
+      code: "GEMINI_EMPTY_RESPONSE",
+      diagnosticId: context.diagnosticId,
+      apiKeyIndex: context.apiKeyIndex,
+      model
+    });
   }
 
   return text;
+}
+
+function createAppError(message, details = {}) {
+  const error = new Error(message);
+  Object.assign(error, details);
+  return error;
+}
+
+function logGeminiError(error, context) {
+  console.error(JSON.stringify({
+    event: "gemini_call_failed",
+    diagnosticId: error.diagnosticId || context.diagnosticId,
+    errorCode: error.code || "GEMINI_UNKNOWN_ERROR",
+    apiKeyIndex: error.apiKeyIndex || context.apiKeyIndex,
+    model: error.model || context.model,
+    httpStatus: error.httpStatus || null,
+    retryable: context.retryable,
+    timeout: context.timeout,
+    message: error.message,
+    causeMessage: error.causeMessage || null
+  }));
 }
 
 function delay(ms) {
@@ -241,17 +306,30 @@ function isGeminiTimeoutError(message) {
   return String(message || "").includes(geminiTimeoutMessage);
 }
 
-function toUserFacingGeminiError(message) {
+function classifyGeminiError(message, httpStatus) {
   const normalized = String(message || "").toLowerCase();
+  if (httpStatus === 401 || httpStatus === 403 || normalized.includes("api key")) return "GEMINI_AUTH_ERROR";
+  if (httpStatus === 429 || normalized.includes("rate limit") || normalized.includes("quota")) return "GEMINI_RATE_LIMIT";
   if (
     normalized.includes("high demand") ||
     normalized.includes("spikes in demand") ||
     normalized.includes("try again later") ||
-    normalized.includes("overloaded") ||
-    normalized.includes("rate limit") ||
-    normalized.includes("quota")
+    normalized.includes("overloaded")
+  ) return "GEMINI_OVERLOADED";
+  if (httpStatus >= 500) return "GEMINI_SERVER_ERROR";
+  return "GEMINI_API_ERROR";
+}
+
+function toUserFacingGeminiError(message, code = classifyGeminiError(message)) {
+  if (
+    code === "GEMINI_RATE_LIMIT" ||
+    code === "GEMINI_OVERLOADED"
   ) {
     return "현재 Gemini 무료 사용량 또는 일시적 접속량 문제로 응답이 지연되고 있습니다. 잠시 후 같은 내용을 다시 전송해주세요.";
+  }
+
+  if (code === "GEMINI_AUTH_ERROR") {
+    return "Gemini API 키 인증에 실패했습니다. 관리자에게 문의해주세요.";
   }
 
   return message;

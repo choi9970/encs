@@ -54,7 +54,7 @@ chatForm.addEventListener("submit", async (event) => {
     const data = await readApiResponse(response);
 
     if (!response.ok) {
-      throw new Error(data.error || "요청에 실패했습니다.");
+      throw createClientError(data);
     }
 
     addMessage("assistant", data.answer, { persist: true });
@@ -70,7 +70,7 @@ chatForm.addEventListener("submit", async (event) => {
       addMessage("meta", `사용 API: ${apiLabel} · 모델: ${data.modelUsed || "확인 불가"}`);
     }
   } catch (error) {
-    addMessage("system", error.message);
+    addMessage("system", formatErrorMessage(error));
   } finally {
     setBusy(false);
     activityInput.focus();
@@ -87,6 +87,14 @@ async function refreshStatus() {
     industryStatus.textContent = "확인 실패";
     modelName.textContent = "확인 실패";
   }
+}
+
+function formatErrorMessage(error) {
+  const parts = [error.message || "요청에 실패했습니다."];
+  if (error.errorCode) parts.push(`오류코드: ${error.errorCode}`);
+  if (error.diagnosticId) parts.push(`진단ID: ${error.diagnosticId}`);
+  if (error.apiKeyIndex) parts.push(`사용 API: ${error.apiKeyIndex}번`);
+  return parts.join("\n");
 }
 
 function renderIndustryStatus(data = {}) {
@@ -106,9 +114,18 @@ async function readApiResponse(response) {
     return JSON.parse(text);
   } catch {
     return {
-      error: "서버 응답이 일시적으로 불안정합니다. 잠시 후 같은 내용을 다시 전송해주세요."
+      error: "서버 응답이 일시적으로 불안정합니다. 잠시 후 같은 내용을 다시 전송해주세요.",
+      errorCode: "NON_JSON_RESPONSE"
     };
   }
+}
+
+function createClientError(data = {}) {
+  const error = new Error(data.error || "요청에 실패했습니다.");
+  error.errorCode = data.errorCode;
+  error.diagnosticId = data.diagnosticId;
+  error.apiKeyIndex = data.apiKeyIndex;
+  return error;
 }
 
 function renderApiNumber() {
