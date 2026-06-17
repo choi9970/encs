@@ -47,13 +47,15 @@ export async function handleChatBody(body) {
     };
   }
 
-  const industryResult = await getIndustryCandidates(activity, history);
+  const industryResult = await getIndustryCandidates(activity, history, apiKeys, diagnosticId);
   if (industryResult.error) {
     return { status: 400, data: { error: industryResult.error } };
   }
 
   const prompt = buildPrompt(activity, history, industryResult.candidates);
-  const geminiResult = await callGemini(apiKeys, prompt, diagnosticId);
+  const geminiResult = await callGemini(apiKeys, prompt, diagnosticId, {
+    timeoutMs: industryResult.expanded ? 20000 : undefined
+  });
 
   return {
     status: 200,
@@ -62,6 +64,8 @@ export async function handleChatBody(body) {
       hasIndustryFile: industryResult.hasIndustryFile,
       industrySource: industryResult.source,
       candidateCount: industryResult.candidates.length,
+      candidateSearchExpanded: industryResult.expanded,
+      expandedKeywords: industryResult.expandedKeywords,
       apiKeyIndex: geminiResult.keyIndex,
       previousApiKeyIndex: geminiResult.previousKeyIndex,
       apiKeySwitched: geminiResult.keyIndex !== geminiResult.previousKeyIndex,
@@ -120,7 +124,7 @@ export function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function callGemini(apiKeys, prompt, diagnosticId) {
+async function callGemini(apiKeys, prompt, diagnosticId, options = {}) {
   const model = getModel();
   const fallbackModel = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash";
   const models = [...new Set([model, fallbackModel].filter(Boolean))];
@@ -136,7 +140,9 @@ async function callGemini(apiKeys, prompt, diagnosticId) {
         const text = await callGeminiModel(apiKey, candidateModel, prompt, {
           diagnosticId,
           apiKeyIndex: keyIndex + 1,
-          model: candidateModel
+          model: candidateModel,
+          timeoutMs: options.timeoutMs,
+          maxOutputTokens: options.maxOutputTokens
         });
         preferredKeyIndex = keyIndex;
         return {
@@ -188,7 +194,7 @@ function getGeminiApiKeys() {
 async function callGeminiModel(apiKey, model, prompt, context) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 25000);
+  const timeoutMs = Number(context.timeoutMs || process.env.GEMINI_TIMEOUT_MS || 25000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
 
@@ -209,7 +215,8 @@ async function callGeminiModel(apiKey, model, prompt, context) {
         ],
         generationConfig: {
           temperature: 0.2,
-          topP: 0.9
+          topP: 0.9,
+          ...(context.maxOutputTokens ? { maxOutputTokens: context.maxOutputTokens } : {})
         }
       })
     });
@@ -493,7 +500,7 @@ function isObviouslyNotBusinessActivity(activity) {
   return compact.length < 4 && !businessSignals.some((signal) => compact.includes(signal));
 }
 
-async function getIndustryCandidates(activity, history) {
+async function getIndustryCandidates(activity, history, apiKeys, diagnosticId) {
   const query = [
     activity,
     ...history
@@ -502,11 +509,105 @@ async function getIndustryCandidates(activity, history) {
   ].join(" ");
 
   const records = await loadBundledIndustryRecords();
+  if (!records.length) {
+    return {
+      hasIndustryFile: false,
+      source: "none",
+      candidates: [],
+      expanded: false,
+      expandedKeywords: []
+    };
+  }
+
+  const initialRank = rankIndustryRecords(records, query);
+  let finalRank = initialRank;
+  let expandedKeywords = [];
+
+  if (shouldExpandCandidateSearch(initialRank)) {
+    try {
+      expandedKeywords = await extractSearchKeywordsWithGemini(apiKeys, activity, history, diagnosticId);
+      if (expandedKeywords.length) {
+        const expandedRank = rankIndustryRecords(records, query, expandedKeywords);
+        if (isBetterCandidateRank(expandedRank, initialRank)) {
+          finalRank = expandedRank;
+        }
+      }
+    } catch (error) {
+      logGeminiError(error, {
+        diagnosticId,
+        apiKeyIndex: error.apiKeyIndex || null,
+        model: error.model || getModel(),
+        retryable: isRetryableGeminiError(error.message),
+        timeout: isGeminiTimeoutError(error.message)
+      });
+    }
+  }
+
   return {
-    hasIndustryFile: records.length > 0,
-    source: records.length > 0 ? "bundled" : "none",
-    candidates: records.length > 0 ? rankIndustryRecords(records, query) : []
+    hasIndustryFile: true,
+    source: "bundled",
+    candidates: finalRank.candidates,
+    expanded: expandedKeywords.length > 0,
+    expandedKeywords
   };
+}
+
+async function extractSearchKeywordsWithGemini(apiKeys, activity, history, diagnosticId) {
+  const compactHistory = history
+    .filter((item) => item.role !== "assistant")
+    .map((item) => String(item.content || "").slice(0, 400))
+    .join("\n");
+  const prompt = `경제총조사 산업분류표 JSON 검색용 키워드를 만들어라.
+분류 판정이나 설명은 하지 말고, 아래 JSON 형식만 출력하라.
+사용자가 말한 사업활동을 산업분류표에서 찾기 쉽도록 유의어, 표준적인 업종 표현, 색인어 후보를 포함하라.
+키워드는 한국어 위주로 4개 이상 16개 이하로 작성하라.
+
+[사용자 입력]
+${activity}
+
+[이전 사용자 대화]
+${compactHistory || "없음"}
+
+[출력]
+{"keywords":["키워드1","키워드2"]}`;
+
+  const result = await callGemini(apiKeys, prompt, diagnosticId, {
+    timeoutMs: 3000,
+    maxOutputTokens: 256
+  });
+  const parsed = parseJsonObjectFromText(result.text);
+  const keywords = Array.isArray(parsed?.keywords) ? parsed.keywords : [];
+  return [...new Set(
+    keywords
+      .map((keyword) => normalizeText(keyword))
+      .filter((keyword) => keyword.length >= 2)
+  )].slice(0, 16);
+}
+
+function parseJsonObjectFromText(text) {
+  const cleaned = String(text || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return {};
+
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return {};
+  }
+}
+
+function shouldExpandCandidateSearch(rank) {
+  return rank.matchedCount === 0 || rank.topScore < 45 || rank.candidates.length < 8;
+}
+
+function isBetterCandidateRank(candidate, current) {
+  if (candidate.matchedCount > current.matchedCount) return true;
+  if (candidate.topScore > current.topScore) return true;
+  return candidate.candidates.length > current.candidates.length && candidate.topScore >= current.topScore;
 }
 
 async function loadBundledIndustryRecords() {
@@ -539,27 +640,38 @@ function normalizeIndustryRecords(raw) {
     .filter((record) => record.산업분류코드 && record.산업분류명);
 }
 
-function rankIndustryRecords(records, query) {
-  const terms = buildSearchTerms(query);
-  const forcedCandidates = findForcedIndustryCandidates(records, query);
+function rankIndustryRecords(records, query, extraTerms = []) {
+  const terms = buildSearchTerms(query, extraTerms);
+  const forcedCandidates = findForcedIndustryCandidates(records, query, extraTerms);
   if (!terms.length) {
-    return mergeCandidateRecords(forcedCandidates, records.slice(0, 60));
+    return {
+      candidates: mergeCandidateRecords(forcedCandidates, records.slice(0, 60)),
+      matchedCount: forcedCandidates.length,
+      topScore: forcedCandidates.length ? 100 : 0
+    };
   }
 
   const scored = records
     .map((record) => ({ record, score: scoreRecord(record, terms) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 50)
-    .map((item) => item.record);
+    .slice(0, 50);
 
-  return scored.length
-    ? mergeCandidateRecords(forcedCandidates, scored).slice(0, 60)
+  const topScore = scored[0]?.score || 0;
+  const rankedRecords = scored.map((item) => item.record);
+  const candidates = scored.length
+    ? mergeCandidateRecords(forcedCandidates, rankedRecords).slice(0, 60)
     : mergeCandidateRecords(forcedCandidates, records.slice(0, 40));
+
+  return {
+    candidates,
+    matchedCount: scored.length + forcedCandidates.length,
+    topScore: Math.max(topScore, forcedCandidates.length ? 100 : 0)
+  };
 }
 
-function findForcedIndustryCandidates(records, query) {
-  const normalized = normalizeText(query);
+function findForcedIndustryCandidates(records, query, extraTerms = []) {
+  const normalized = normalizeText([query, ...extraTerms].join(" "));
   const compact = normalized.replace(/\s+/g, "");
   const forced = [];
 
@@ -624,8 +736,8 @@ function scoreRecord(record, terms) {
   return score;
 }
 
-function buildSearchTerms(query) {
-  const normalized = normalizeText(query);
+function buildSearchTerms(query, extraTerms = []) {
+  const normalized = normalizeText([query, ...extraTerms].join(" "));
   const compact = normalized.replace(/\s+/g, "");
   const words = normalized
     .split(/\s+/)
