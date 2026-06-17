@@ -188,7 +188,7 @@ function getGeminiApiKeys() {
 async function callGeminiModel(apiKey, model, prompt, context) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 18000);
+  const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 25000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
 
