@@ -103,6 +103,26 @@ h1 {
   font-size: 13px;
 }
 
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
+.download-link:hover {
+  border-color: var(--accent);
+}
+
 .chat-shell {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;

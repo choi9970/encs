@@ -787,5 +787,7 @@ function trimIndustryRecord(record) {
 }
 
 function getIndustryPath() {
-  return path.join(process.cwd(), industryFileName);
+  const rootPath = path.join(process.cwd(), industryFileName);
+  if (existsSync(rootPath)) return rootPath;
+  return path.join(process.cwd(), "public", industryFileName);
 }

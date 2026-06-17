@@ -8,6 +8,7 @@ const apiNumber = document.querySelector("#apiNumber");
 const activeApiNumber = document.querySelector("#activeApiNumber");
 const footerApiNumber = document.querySelector("#footerApiNumber");
 const charCounter = document.querySelector("#charCounter");
+const industryDownload = document.querySelector("#industryDownload");
 
 const maxInputLength = 1200;
 const maxStoredMessages = 20;
@@ -100,10 +101,12 @@ function formatErrorMessage(error) {
 function renderIndustryStatus(data = {}) {
   if (data.hasIndustryFile) {
     industryStatus.textContent = `배포 파일 적용 (${formatBytes(data.industryFileSize || 0)})`;
+    industryDownload.hidden = false;
     return;
   }
 
   industryStatus.textContent = "미적용";
+  industryDownload.hidden = true;
 }
 
 async function readApiResponse(response) {
