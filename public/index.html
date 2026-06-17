@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>경제총조사 산업분류 챗봇</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <div>
+          <h1>경제총조사 산업분류</h1>
+          <p class="subtle">기업 활동을 입력하면 정해진 형식으로 정리하고 산업분류표 기준으로 판정합니다.</p>
+        </div>
+
+        <section class="status-panel" aria-label="설정 상태">
+          <div class="status-row">
+            <span>API 번호</span>
+            <strong id="apiNumber">확인 중</strong>
+          </div>
+          <div class="status-row">
+            <span>사용 API</span>
+            <strong id="activeApiNumber">응답 후 표시</strong>
+          </div>
+          <div class="status-row">
+            <span>Gemini 모델</span>
+            <strong id="modelName">확인 중</strong>
+          </div>
+          <div class="status-row">
+            <span>산업분류표</span>
+            <strong id="industryStatus">확인 중</strong>
+          </div>
+        </section>
+
+        <p class="helper">산업분류표는 배포된 서버 파일만 사용합니다.</p>
+        <p class="warning-note">AI가 생성한 판정은 참고용입니다. 최종 산업분류는 담당자가 산업분류표와 사업체 실제 활동을 확인해 결정해야 합니다.</p>
+      </aside>
+
+      <section class="chat-shell" aria-label="채팅">
+        <div id="messages" class="messages"></div>
+
+        <form id="chatForm" class="composer">
+          <div class="input-wrap">
+            <textarea
+              id="activityInput"
+              rows="3"
+              maxlength="1200"
+              placeholder="예: 원두를 매입해 매장에서 커피 음료를 제조·판매하고, 포장 원두도 온라인으로 판매함"
+            ></textarea>
+            <div id="charCounter" class="char-counter">0 / 1200</div>
+          </div>
+          <button id="sendButton" type="submit">전송</button>
+        </form>
+
+        <footer class="app-footer">용산구 경제총조사 관리자 최정문 · <span id="footerApiNumber">API 확인 중</span></footer>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
