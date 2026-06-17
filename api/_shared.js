@@ -337,7 +337,11 @@ function toUserFacingGeminiError(message, code = classifyGeminiError(message)) {
 
 function buildPrompt(activity, history, candidates) {
   const industryRule = candidates.length
-    ? `서버에 배포된 산업분류표 JSON에서 검색한 아래 후보 목록만 보고 산업분류를 판정하라. 외부 지식, 일반 상식, 다른 표준산업분류 지식을 코드/명칭 판정 근거로 사용하지 말라. 후보에 충분한 분류가 없으면 추가질문 필요 또는 확신도 낮음으로 답하라.\n\n[산업분류표 후보 JSON]\n${JSON.stringify(candidates, null, 2)}`
+    ? `서버에 배포된 산업분류표 JSON에서 검색한 아래 후보 목록만 보고 산업분류를 판정하라. 외부 지식, 일반 상식, 다른 표준산업분류 지식을 코드/명칭 판정 근거로 사용하지 말라.
+후보 목록 안에 사용자 활동과 직접 또는 유사하게 맞는 분류가 있으면 산업분류코드/명에 '없음'을 쓰지 말고 가장 가까운 후보를 선택하라.
+추가질문 필요 여부가 '예'여도 주사업/부사업의 산업분류코드, 산업색인명, 산업분류명, 차수, 색인, 상세설명은 가장 가까운 후보로 잠정 작성하라. 불확실성은 판정근거와 확신도에 적어라.
+사용자가 '공부방 운영'을 말했다면 후보 목록에 '공부방(장소만 제공)' 또는 '독서실 운영업'이 있는 경우 부사업 후보로 우선 제시하라. 교육 방식이 불명확하다는 이유만으로 해당 후보를 [제외후보]로 보내지 말라.
+후보에 전혀 관련 분류가 없거나 사업활동 정보가 부족할 때만 추가질문 필요 또는 확신도 낮음으로 답하라.\n\n[산업분류표 후보 JSON]\n${JSON.stringify(candidates, null, 2)}`
     : "아직 산업분류표 JSON이 제공되지 않았다. 코드, 산업분류명, 색인은 임의로 만들지 말고 '산업분류파일 필요'라고 적어라.";
 
   const compactHistory = history
@@ -537,16 +541,71 @@ function normalizeIndustryRecords(raw) {
 
 function rankIndustryRecords(records, query) {
   const terms = buildSearchTerms(query);
-  if (!terms.length) return records.slice(0, 60).map(trimIndustryRecord);
+  const forcedCandidates = findForcedIndustryCandidates(records, query);
+  if (!terms.length) {
+    return mergeCandidateRecords(forcedCandidates, records.slice(0, 60));
+  }
 
   const scored = records
     .map((record) => ({ record, score: scoreRecord(record, terms) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 50)
-    .map((item) => trimIndustryRecord(item.record));
+    .map((item) => item.record);
 
-  return scored.length ? scored : records.slice(0, 40).map(trimIndustryRecord);
+  return scored.length
+    ? mergeCandidateRecords(forcedCandidates, scored).slice(0, 60)
+    : mergeCandidateRecords(forcedCandidates, records.slice(0, 40));
+}
+
+function findForcedIndustryCandidates(records, query) {
+  const normalized = normalizeText(query);
+  const compact = normalized.replace(/\s+/g, "");
+  const forced = [];
+
+  const addMatches = (predicate) => {
+    for (const record of records) {
+      if (predicate(record)) forced.push(record);
+    }
+  };
+
+  if (hasAny(compact, ["교회", "기독교", "예배", "목회"])) {
+    addMatches((record) =>
+      record.산업분류코드 === "94912" ||
+      normalizeText(`${record.산업색인명} ${record.색인} ${record.산업분류명}`).includes("교회 기독교") ||
+      normalizeText(`${record.산업색인명} ${record.색인} ${record.산업분류명}`).includes("기독교 단체")
+    );
+  }
+
+  if (hasAny(compact, ["공부방", "방과후", "방과후공부", "아이들공부", "학생공부", "학습공간", "독서실"])) {
+    addMatches((record) =>
+      record.산업분류코드 === "90212" ||
+      normalizeText(`${record.산업색인명} ${record.색인}`).includes("공부방") ||
+      normalizeText(record.산업분류명).includes("독서실 운영업")
+    );
+  }
+
+  return forced;
+}
+
+function mergeCandidateRecords(...groups) {
+  const merged = [];
+  const seen = new Set();
+
+  for (const group of groups) {
+    for (const record of group) {
+      const key = `${record.산업분류코드}|${record.산업색인명}|${record.색인}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(trimIndustryRecord(record));
+    }
+  }
+
+  return merged;
+}
+
+function hasAny(text, keywords) {
+  return keywords.some((keyword) => text.includes(normalizeText(keyword).replace(/\s+/g, "")));
 }
 
 function scoreRecord(record, terms) {
@@ -567,6 +626,7 @@ function scoreRecord(record, terms) {
 
 function buildSearchTerms(query) {
   const normalized = normalizeText(query);
+  const compact = normalized.replace(/\s+/g, "");
   const words = normalized
     .split(/\s+/)
     .map((word) => word.trim())
@@ -582,7 +642,16 @@ function buildSearchTerms(query) {
     }
   }
 
-  return [...new Set([...words, ...grams])].slice(0, 120);
+  const expansions = [];
+  if (hasAny(compact, ["교회", "기독교", "예배", "목회"])) {
+    expansions.push("교회", "기독교", "기독교 단체", "종교", "종교 단체", "포교소", "예배");
+  }
+
+  if (hasAny(compact, ["공부방", "방과후", "아이들", "학생", "학습", "독서실"])) {
+    expansions.push("공부방", "독서실", "장소만 제공", "학습 장소", "교육", "방과후", "학생");
+  }
+
+  return [...new Set([...words, ...expansions.map(normalizeText), ...grams])].slice(0, 150);
 }
 
 function normalizeText(value) {
