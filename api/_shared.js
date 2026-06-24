@@ -35,7 +35,7 @@ export async function handleChatBody(body) {
     return { status: 400, data: { error: "기업 활동 내용을 입력해주세요." } };
   }
 
-  if (isObviouslyNotBusinessActivity(activity)) {
+  if (isObviouslyNotBusinessActivity(activity, history)) {
     return {
       status: 200,
       data: {
@@ -451,11 +451,13 @@ ${activity}
 높음 / 중간 / 낮음`;
 }
 
-function isObviouslyNotBusinessActivity(activity) {
+function isObviouslyNotBusinessActivity(activity, history = []) {
   const normalized = normalizeText(activity);
   if (!normalized) return true;
 
   const compact = normalized.replace(/\s+/g, "");
+  if (isFollowUpAnswer(activity, history)) return false;
+
   const nonBusinessInputs = new Set([
     "안녕",
     "안녕하세요",
@@ -514,6 +516,31 @@ function isObviouslyNotBusinessActivity(activity) {
   ];
 
   return compact.length < 4 && !businessSignals.some((signal) => compact.includes(signal));
+}
+
+function isFollowUpAnswer(activity, history = []) {
+  const compact = normalizeText(activity).replace(/\s+/g, "");
+  if (!compact) return false;
+
+  const looksLikeShortAnswer =
+    /^\d+명?$/.test(compact) ||
+    /^(\d+인이하|\d+인이상|\d+명 이하|\d+명 이상)$/.test(activity.trim()) ||
+    ["예", "아니오", "네", "아니요", "본사", "공장", "지사", "직접제조", "장소만제공", "교육제공"].includes(compact);
+
+  if (!looksLikeShortAnswer) return false;
+
+  return history.some((item) => {
+    const text = String(item?.content || "");
+    return (
+      text.includes("추가질문 필요 여부:") ||
+      text.includes("[추가질문]") ||
+      text.includes("종사자 수") ||
+      text.includes("9인 이하") ||
+      text.includes("10인 이상") ||
+      text.includes("본사") ||
+      text.includes("공장")
+    );
+  });
 }
 
 async function getIndustryCandidates(activity, history, apiKeys, diagnosticId) {
