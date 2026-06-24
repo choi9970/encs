@@ -643,11 +643,12 @@ function normalizeIndustryRecords(raw) {
 function rankIndustryRecords(records, query, extraTerms = []) {
   const terms = buildSearchTerms(query, extraTerms);
   const forcedCandidates = findForcedIndustryCandidates(records, query, extraTerms);
+  const similarityRank = rankSimilarIndustryRecords(records, query, extraTerms);
   if (!terms.length) {
     return {
-      candidates: mergeCandidateRecords(forcedCandidates, records.slice(0, 60)),
-      matchedCount: forcedCandidates.length,
-      topScore: forcedCandidates.length ? 100 : 0
+      candidates: mergeCandidateRecords(forcedCandidates, similarityRank.map((item) => item.record)).slice(0, 60),
+      matchedCount: forcedCandidates.length + similarityRank.length,
+      topScore: Math.max(forcedCandidates.length ? 100 : 0, similarityRank[0]?.score || 0)
     };
   }
 
@@ -660,14 +661,102 @@ function rankIndustryRecords(records, query, extraTerms = []) {
   const topScore = scored[0]?.score || 0;
   const rankedRecords = scored.map((item) => item.record);
   const candidates = scored.length
-    ? mergeCandidateRecords(forcedCandidates, rankedRecords).slice(0, 60)
-    : mergeCandidateRecords(forcedCandidates, records.slice(0, 40));
+    ? mergeCandidateRecords(forcedCandidates, rankedRecords, similarityRank.map((item) => item.record)).slice(0, 60)
+    : mergeCandidateRecords(forcedCandidates, similarityRank.map((item) => item.record)).slice(0, 60);
 
   return {
     candidates,
-    matchedCount: scored.length + forcedCandidates.length,
-    topScore: Math.max(topScore, forcedCandidates.length ? 100 : 0)
+    matchedCount: scored.length + forcedCandidates.length + similarityRank.length,
+    topScore: Math.max(topScore, forcedCandidates.length ? 100 : 0, similarityRank[0]?.score || 0)
   };
+}
+
+function rankSimilarIndustryRecords(records, query, extraTerms = []) {
+  const profile = buildSimilarityProfile(query, extraTerms);
+  if (!profile.tokens.length && !profile.grams.length) return [];
+
+  return records
+    .map((record) => ({ record, score: scoreRecordSimilarity(record, profile) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 40);
+}
+
+function buildSimilarityProfile(query, extraTerms = []) {
+  const normalized = normalizeText([query, ...extraTerms].join(" "));
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .filter((token) => !isWeakSearchToken(token));
+  const compact = normalized.replace(/\s+/g, "");
+  const grams = [];
+
+  for (let size = 2; size <= 4; size += 1) {
+    for (let index = 0; index <= compact.length - size; index += 1) {
+      const gram = compact.slice(index, index + size);
+      if (!isWeakSearchToken(gram)) grams.push(gram);
+    }
+  }
+
+  return {
+    tokens: [...new Set(tokens)].slice(0, 80),
+    grams: [...new Set(grams)].slice(0, 160)
+  };
+}
+
+function scoreRecordSimilarity(record, profile) {
+  const name = normalizeText(record.산업분류명);
+  const index = normalizeText(`${record.색인} ${record.산업색인명}`);
+  const detail = normalizeText(`${record.상세설명} ${record.상세보기_데이터}`).slice(0, 2400);
+  const combined = `${name} ${index} ${detail}`;
+  let score = 0;
+
+  for (const token of profile.tokens) {
+    if (record.산업분류코드 === token) score += 220;
+    if (index.includes(token)) score += 38 + Math.min(token.length, 10);
+    if (name.includes(token)) score += 34 + Math.min(token.length, 10);
+    if (detail.includes(token)) score += 9 + Math.min(token.length, 8);
+  }
+
+  let gramHits = 0;
+  for (const gram of profile.grams) {
+    if (index.includes(gram)) {
+      score += 5;
+      gramHits += 1;
+    } else if (name.includes(gram)) {
+      score += 4;
+      gramHits += 1;
+    } else if (combined.includes(gram)) {
+      score += 1;
+      gramHits += 1;
+    }
+  }
+
+  if (gramHits >= 4) score += Math.min(gramHits, 24);
+  return score;
+}
+
+function isWeakSearchToken(token) {
+  return [
+    "하고",
+    "하는",
+    "한다",
+    "함",
+    "및",
+    "또",
+    "도",
+    "같이",
+    "주로",
+    "운영",
+    "제공",
+    "서비스",
+    "사업",
+    "업체",
+    "회사",
+    "판매",
+    "제조"
+  ].includes(token);
 }
 
 function findForcedIndustryCandidates(records, query, extraTerms = []) {
