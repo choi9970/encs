@@ -56,11 +56,12 @@ export async function handleChatBody(body) {
   const geminiResult = await callGemini(apiKeys, prompt, diagnosticId, {
     timeoutMs: industryResult.expanded ? 20000 : undefined
   });
+  const verifiedAnswer = await verifyIndustryFields(geminiResult.text, industryResult.candidates);
 
   return {
     status: 200,
     data: {
-      answer: geminiResult.text,
+      answer: verifiedAnswer,
       hasIndustryFile: industryResult.hasIndustryFile,
       industrySource: industryResult.source,
       candidateCount: industryResult.candidates.length,
@@ -342,11 +343,101 @@ function toUserFacingGeminiError(message, code = classifyGeminiError(message)) {
   return message;
 }
 
+async function verifyIndustryFields(answer, candidates = []) {
+  const records = await loadBundledIndustryRecords();
+  if (!records.length) return answer;
+
+  const allByCode = groupRecordsByCode(records);
+  const candidateByCode = groupRecordsByCode(candidates);
+  const lines = String(answer || "").split("\n");
+  const repaired = [...lines];
+  const sectionStarts = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\[(주사업|부사업1|부사업2|제외후보)\]/.test(lines[index].trim())) {
+      sectionStarts.push(index);
+    }
+  }
+
+  for (let sectionIndex = 0; sectionIndex < sectionStarts.length; sectionIndex += 1) {
+    const start = sectionStarts[sectionIndex];
+    const end = sectionStarts[sectionIndex + 1] ?? lines.length;
+    repairIndustrySection(repaired, start, end, allByCode, candidateByCode);
+  }
+
+  return repaired.join("\n");
+}
+
+function groupRecordsByCode(records) {
+  const grouped = new Map();
+  for (const record of records) {
+    const code = String(record.산업분류코드 || "").trim();
+    if (!code) continue;
+    if (!grouped.has(code)) grouped.set(code, []);
+    grouped.get(code).push(record);
+  }
+  return grouped;
+}
+
+function repairIndustrySection(lines, start, end, allByCode, candidateByCode) {
+  const fieldLines = {};
+  for (let index = start + 1; index < end; index += 1) {
+    const match = lines[index].match(/^(산업분류코드|산업색인명|산업분류명|차수|색인|상세설명):(.*)$/);
+    if (match) fieldLines[match[1]] = index;
+  }
+
+  const code = getFieldValue(lines, fieldLines.산업분류코드);
+  if (!code || code === "없음" || code === "산업분류파일 필요") return;
+
+  const validRecords = allByCode.get(code) || [];
+  if (!validRecords.length) return;
+
+  const candidateRecords = candidateByCode.get(code) || [];
+  const preferred = choosePreferredRecord(lines, fieldLines, candidateRecords, validRecords);
+  if (!preferred) return;
+
+  setInvalidField(lines, fieldLines, "산업색인명", preferred.산업색인명, validRecords.map((record) => record.산업색인명));
+  setInvalidField(lines, fieldLines, "산업분류명", preferred.산업분류명, validRecords.map((record) => record.산업분류명));
+  setInvalidField(lines, fieldLines, "차수", preferred.차수, validRecords.map((record) => record.차수));
+  setInvalidField(lines, fieldLines, "색인", preferred.색인 || preferred.산업색인명, validRecords.map((record) => record.색인 || record.산업색인명));
+}
+
+function choosePreferredRecord(lines, fieldLines, candidateRecords, validRecords) {
+  const currentIndex = getFieldValue(lines, fieldLines.색인);
+  const currentIndexName = getFieldValue(lines, fieldLines.산업색인명);
+  const pool = candidateRecords.length ? candidateRecords : validRecords;
+
+  return (
+    pool.find((record) => record.산업색인명 === currentIndexName || record.색인 === currentIndex) ||
+    candidateRecords[0] ||
+    validRecords[0]
+  );
+}
+
+function setInvalidField(lines, fieldLines, field, replacement, validValues) {
+  const index = fieldLines[field];
+  if (index === undefined || replacement === undefined) return;
+
+  const current = getFieldValue(lines, index);
+  if (!current || current === "없음") return;
+
+  const validSet = new Set(validValues.map((value) => String(value || "").trim()).filter(Boolean));
+  if (validSet.has(current)) return;
+
+  lines[index] = `${field}: ${replacement}`;
+}
+
+function getFieldValue(lines, index) {
+  if (index === undefined) return "";
+  return String(lines[index].split(":").slice(1).join(":")).trim();
+}
+
 function buildPrompt(activity, history, candidates) {
   const industryRule = candidates.length
     ? `서버에 배포된 산업분류표 JSON에서 검색한 아래 후보 목록만 보고 산업분류를 판정하라. 외부 지식, 일반 상식, 다른 표준산업분류 지식을 코드/명칭 판정 근거로 사용하지 말라.
 후보 목록 안에 사용자 활동과 직접 또는 유사하게 맞는 분류가 있으면 산업분류코드/명에 '없음'을 쓰지 말고 가장 가까운 후보를 선택하라.
 추가질문 필요 여부가 '예'여도 주사업/부사업의 산업분류코드, 산업색인명, 산업분류명, 차수, 색인, 상세설명은 가장 가까운 후보로 잠정 작성하라. 불확실성은 판정근거와 확신도에 적어라.
+산업분류코드, 산업색인명, 산업분류명, 차수, 색인은 반드시 후보 JSON에 있는 값을 그대로 복사하라. 산업색인명에는 산업분류명을 복사하지 말고 후보 JSON의 산업색인명 값을 써라.
 사용자가 '공부방 운영'을 말했다면 후보 목록에 '공부방(장소만 제공)' 또는 '독서실 운영업'이 있는 경우 부사업 후보로 우선 제시하라. 교육 방식이 불명확하다는 이유만으로 해당 후보를 [제외후보]로 보내지 말라.
 추가질문 필요 여부가 '아니오'이면 바로 다음 줄에 '조사표:'를 반드시 작성하라. 조사표는 [주사업]의 산업분류코드 앞 2자리 또는 앞 3자리를 기준으로 아래 조사표 기준에서 고른다.
 사용자가 본사·지사·지역본부·관리본부처럼 공장/광산/지점을 관리하는 본사 관리활동이라고 명시하면 종사자 수를 묻지 말고 본사 부호로 판정하라. 제조업 본사·지사는 71511 제조업 회사 본부, 광업 등 비제조업 본사·지사는 71519 기타 산업 회사본부를 우선 적용하고 조사표는 조사표 2로 작성하라.
