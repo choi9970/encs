@@ -103,6 +103,81 @@ h1 {
   font-size: 13px;
 }
 
+.analytics-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.analytics-summary div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfc;
+}
+
+.analytics-summary span,
+.chart-labels {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.analytics-summary strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.visitor-chart {
+  width: 100%;
+  min-height: 92px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbfc 100%);
+  overflow: hidden;
+}
+
+.visitor-chart svg {
+  display: block;
+  width: 100%;
+  height: 92px;
+}
+
+.chart-area {
+  fill: rgba(20, 108, 148, 0.12);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
+.chart-dot {
+  fill: #ffffff;
+  stroke: var(--accent-strong);
+  stroke-width: 1.7;
+}
+
+.chart-empty {
+  display: grid;
+  min-height: 92px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -4px;
+}
+
 .panel-note {
   margin: 2px 0 0;
   color: var(--muted);

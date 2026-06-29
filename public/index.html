@@ -35,13 +35,20 @@
         </section>
 
         <section class="status-panel" aria-label="방문 통계">
-          <div class="status-row">
-            <span>오늘 방문자</span>
-            <strong id="todayVisitors">확인 중</strong>
+          <div class="analytics-summary">
+            <div>
+              <span>오늘</span>
+              <strong id="todayVisitors">확인 중</strong>
+            </div>
+            <div>
+              <span>30일 누적</span>
+              <strong id="monthVisitors">확인 중</strong>
+            </div>
           </div>
-          <div class="status-row">
-            <span>30일 누적</span>
-            <strong id="monthVisitors">확인 중</strong>
+          <div id="visitorChart" class="visitor-chart" role="img" aria-label="최근 30일 방문자 그래프"></div>
+          <div class="chart-labels">
+            <span id="chartStartDate">-</span>
+            <span id="chartEndDate">-</span>
           </div>
           <p id="analyticsNote" class="panel-note">검색·답변 로그는 최근 3일만 저장합니다.</p>
         </section>

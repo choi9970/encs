@@ -12,6 +12,9 @@ const industryDownload = document.querySelector("#industryDownload");
 const todayVisitors = document.querySelector("#todayVisitors");
 const monthVisitors = document.querySelector("#monthVisitors");
 const analyticsNote = document.querySelector("#analyticsNote");
+const visitorChart = document.querySelector("#visitorChart");
+const chartStartDate = document.querySelector("#chartStartDate");
+const chartEndDate = document.querySelector("#chartEndDate");
 
 const maxInputLength = 1200;
 const maxStoredMessages = 20;
@@ -115,13 +118,51 @@ function renderAnalytics(data = {}) {
   if (!data.enabled) {
     todayVisitors.textContent = "-";
     monthVisitors.textContent = "-";
+    renderVisitorChart([]);
     analyticsNote.textContent = "통계 저장소가 아직 연결되지 않았습니다.";
     return;
   }
 
   todayVisitors.textContent = formatCount(data.todayVisitors);
   monthVisitors.textContent = formatCount(data.monthVisitors);
+  renderVisitorChart(data.dailyVisitors || []);
   analyticsNote.textContent = "검색·답변 로그는 최근 3일만 저장합니다.";
+}
+
+function renderVisitorChart(items) {
+  const series = Array.isArray(items) ? items : [];
+  if (!series.length) {
+    visitorChart.innerHTML = `<div class="chart-empty">방문 데이터 없음</div>`;
+    chartStartDate.textContent = "-";
+    chartEndDate.textContent = "-";
+    return;
+  }
+
+  const width = 236;
+  const height = 92;
+  const padX = 8;
+  const padTop = 12;
+  const padBottom = 18;
+  const max = Math.max(1, ...series.map((item) => Number(item.count || 0)));
+  const step = series.length > 1 ? (width - padX * 2) / (series.length - 1) : 0;
+  const points = series.map((item, index) => {
+    const x = padX + step * index;
+    const y = padTop + (height - padTop - padBottom) * (1 - Number(item.count || 0) / max);
+    return { x, y, count: Number(item.count || 0), date: item.date };
+  });
+  const polyline = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const area = `${padX},${height - padBottom} ${polyline} ${width - padX},${height - padBottom}`;
+  const last = points[points.length - 1];
+
+  visitorChart.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false">
+      <polygon class="chart-area" points="${area}"></polygon>
+      <polyline class="chart-line" points="${polyline}"></polyline>
+      ${points.map((point) => `<circle class="chart-dot" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${point === last ? 3 : 2}"><title>${formatShortDate(point.date)} ${point.count}명</title></circle>`).join("")}
+    </svg>
+  `;
+  chartStartDate.textContent = formatShortDate(series[0].date);
+  chartEndDate.textContent = formatShortDate(series[series.length - 1].date);
 }
 
 function getVisitorId() {
@@ -291,4 +332,10 @@ function formatBytes(bytes) {
 function formatCount(value) {
   const number = Number(value || 0);
   return `${number.toLocaleString("ko-KR")}명`;
+}
+
+function formatShortDate(value) {
+  const [, month, day] = String(value || "").split("-");
+  if (!month || !day) return "-";
+  return `${Number(month)}.${Number(day)}`;
 }

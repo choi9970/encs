@@ -215,6 +215,19 @@ function getKoreanDayStartMs(offsetDays = 0) {
   return korean.getTime() - 9 * 60 * 60 * 1000;
 }
 
+function getDailyVisitorRanges(days, now = Date.now()) {
+  return Array.from({ length: days }, (_, index) => {
+    const offset = days - index - 1;
+    const start = getKoreanDayStartMs(offset);
+    const end = offset === 0 ? now : getKoreanDayStartMs(offset - 1) - 1;
+    return {
+      date: getKoreanDateKey(start + 9 * 60 * 60 * 1000),
+      start,
+      end
+    };
+  });
+}
+
 export async function getAnalyticsData(options = {}) {
   const storage = getAnalyticsStorage();
   if (!storage.enabled) {
@@ -222,6 +235,7 @@ export async function getAnalyticsData(options = {}) {
       enabled: false,
       todayVisitors: null,
       monthVisitors: null,
+      dailyVisitors: [],
       logRetentionDays: 3,
       logs: options.includeLogs ? [] : undefined
     };
@@ -231,14 +245,20 @@ export async function getAnalyticsData(options = {}) {
   const todayStart = getKoreanDayStartMs(0);
   const rollingStart = now - 30 * 24 * 60 * 60 * 1000;
   const visitorKey = analyticsKey("visitors");
-  const [todayVisitors, monthVisitors] = await Promise.all([
+  const dailyRanges = getDailyVisitorRanges(30, now);
+  const [todayVisitors, monthVisitors, ...dailyCounts] = await Promise.all([
     kvCommand(["ZCOUNT", visitorKey, todayStart, now]),
-    kvCommand(["ZCOUNT", visitorKey, rollingStart, now])
+    kvCommand(["ZCOUNT", visitorKey, rollingStart, now]),
+    ...dailyRanges.map((item) => kvCommand(["ZCOUNT", visitorKey, item.start, item.end]))
   ]);
   const data = {
     enabled: true,
     todayVisitors: Number(todayVisitors || 0),
     monthVisitors: Number(monthVisitors || 0),
+    dailyVisitors: dailyRanges.map((item, index) => ({
+      date: item.date,
+      count: Number(dailyCounts[index] || 0)
+    })),
     logRetentionDays: 3
   };
 
@@ -266,7 +286,8 @@ export async function recordVisit(body = {}) {
     return {
       enabled: false,
       todayVisitors: null,
-      monthVisitors: null
+      monthVisitors: null,
+      dailyVisitors: []
     };
   }
 
