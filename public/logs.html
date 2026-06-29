@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>경제총조사 산업분류 로그</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="logs-page">
+    <main class="logs-shell">
+      <header class="logs-header">
+        <div>
+          <h1>검색·답변 로그</h1>
+          <p class="subtle">최근 3일간 저장된 질문과 AI 답변을 확인합니다.</p>
+        </div>
+        <a class="download-link" href="/">채팅으로 돌아가기</a>
+      </header>
+
+      <form id="logsForm" class="logs-toolbar">
+        <input id="adminToken" type="password" autocomplete="current-password" placeholder="관리자 토큰" />
+        <input id="logLimit" type="number" min="1" max="500" value="100" aria-label="조회 개수" />
+        <button type="submit">조회</button>
+      </form>
+
+      <p id="logsStatus" class="panel-note">관리자 토큰을 입력하고 조회하세요.</p>
+      <section id="logsList" class="logs-list" aria-label="최근 검색 답변 로그"></section>
+    </main>
+
+    <script src="/logs.js" type="module"></script>
+  </body>
+</html>
