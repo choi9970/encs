@@ -64,6 +64,7 @@ function renderLogs(logs) {
 }
 
 function logsStorageLabel(value) {
+  if (value === "postgres") return "Supabase Postgres DB";
   if (value === "supabase") return "Supabase DB";
   if (value === "kv") return "임시 KV 로그";
   return "로그 저장소 확인 불가";

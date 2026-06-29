@@ -26,14 +26,15 @@ KV_REST_API_URL=your_upstash_rest_url
 KV_REST_API_TOKEN=your_upstash_rest_token
 ```
 
-질문·답변 로그는 Supabase에 저장합니다. Supabase SQL Editor에서 `supabase_chat_logs.sql`을 먼저 실행한 뒤 Vercel 환경변수에 아래 값을 추가합니다.
+질문·답변 로그는 Supabase Postgres에 저장합니다. 서버가 테이블을 자동 생성하지만, 수동으로 만들고 싶으면 Supabase SQL Editor에서 `supabase_chat_logs.sql`을 실행해도 됩니다. Vercel 환경변수에 아래 값을 추가합니다.
 
 ```env
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-SUPABASE_LOG_TABLE=ecensus_chat_logs
+SUPABASE_DATABASE_URL=postgresql://...
+SUPABASE_LOG_TABLE=public.ecensus_chat_logs
 ANALYTICS_ADMIN_TOKEN=your_admin_token
 ```
+
+Vercel 서버리스에서는 Supabase 직접 DB 주소(`db.<project>.supabase.co:5432`)가 IPv6/DNS 문제로 실패할 수 있습니다. 이 경우 Supabase Dashboard의 Connection Pooler URI를 `SUPABASE_DATABASE_URL`에 넣거나, `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` REST 방식으로 연결합니다.
 
 관리자 로그 화면은 `/logs.html`입니다. 로그는 최근 3일치만 조회·보관합니다.
 
