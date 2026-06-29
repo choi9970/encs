@@ -56,7 +56,7 @@ export async function handleChatBody(body) {
   const geminiResult = await callGemini(apiKeys, prompt, diagnosticId, {
     timeoutMs: industryResult.expanded ? 20000 : undefined
   });
-  const verifiedAnswer = await verifyIndustryFields(geminiResult.text, industryResult.candidates);
+  const verifiedAnswer = await verifyIndustryFields(geminiResult.text, industryResult.candidates, activity);
 
   return {
     status: 200,
@@ -343,7 +343,7 @@ function toUserFacingGeminiError(message, code = classifyGeminiError(message)) {
   return message;
 }
 
-async function verifyIndustryFields(answer, candidates = []) {
+async function verifyIndustryFields(answer, candidates = [], activity = "") {
   const records = await loadBundledIndustryRecords();
   if (!records.length) return answer;
 
@@ -351,10 +351,11 @@ async function verifyIndustryFields(answer, candidates = []) {
   const candidateByCode = groupRecordsByCode(candidates);
   const lines = String(answer || "").split("\n");
   const repaired = [...lines];
+  repairIndependentLectureMisclassification(repaired, records, activity);
   const sectionStarts = [];
 
-  for (let index = 0; index < lines.length; index += 1) {
-    if (/^\[(주사업|부사업1|부사업2|제외후보)\]/.test(lines[index].trim())) {
+  for (let index = 0; index < repaired.length; index += 1) {
+    if (/^\[(주사업|부사업1|부사업2|제외후보)\]/.test(repaired[index].trim())) {
       sectionStarts.push(index);
     }
   }
@@ -365,7 +366,73 @@ async function verifyIndustryFields(answer, candidates = []) {
     repairIndustrySection(repaired, start, end, allByCode, candidateByCode);
   }
 
-  return repaired.join("\n");
+  return normalizeSurveyFormLine(repaired.join("\n"));
+}
+
+function normalizeSurveyFormLine(answer) {
+  return String(answer || "").replace(/조사표:\s*\n\s*(조사표\s*\d[^\n]*)/g, "조사표: $1");
+}
+
+function repairIndependentLectureMisclassification(lines, records, activity) {
+  if (!isIndependentBusinessLecture(activity)) return;
+  if (hasAny(normalizeText(activity).replace(/\s+/g, ""), ["노인학교", "노인대학", "어르신대학", "고령자교육시설"])) return;
+
+  const target = records.find((record) =>
+    record.산업분류코드 === "85699" &&
+    (record.산업색인명 === "경영관련 교육" || record.색인 === "경영관련 교육")
+  );
+  if (!target) return;
+
+  const mainStart = lines.findIndex((line) => line.trim() === "[주사업]");
+  if (mainStart < 0) return;
+  const mainEnd = lines.findIndex((line, index) => index > mainStart && /^\[(부사업1|부사업2|제외후보|판정사유|확신도)\]/.test(line.trim()));
+  const end = mainEnd < 0 ? lines.length : mainEnd;
+  const mainBlock = lines.slice(mainStart, end).join("\n");
+  if (
+    !/산업분류코드:\s*85640/.test(mainBlock) &&
+    !/산업분류코드:\s*85699/.test(mainBlock) &&
+    !mainBlock.includes("노인학교(노인대학)")
+  ) return;
+
+  setFieldInRange(lines, mainStart, end, "산업분류코드", target.산업분류코드);
+  setFieldInRange(lines, mainStart, end, "산업색인명", target.산업색인명);
+  setFieldInRange(lines, mainStart, end, "산업분류명", target.산업분류명);
+  setFieldInRange(lines, mainStart, end, "차수", target.차수);
+  setFieldInRange(lines, mainStart, end, "색인", target.색인 || target.산업색인명);
+  setFieldInRange(lines, mainStart, end, "상세설명", compactDescription(target.상세설명));
+  setFieldInRange(
+    lines,
+    mainStart,
+    end,
+    "판정근거",
+    "대학교 소속 급여근로자가 아니라 사업자 등록 후 계약으로 창업·경영 관련 강의를 제공하는 독립 교육용역 활동이므로 경영관련 교육 후보를 우선 적용함."
+  );
+}
+
+function setFieldInRange(lines, start, end, field, value) {
+  for (let index = start + 1; index < end; index += 1) {
+    if (lines[index].startsWith(`${field}:`)) {
+      lines[index] = `${field}: ${value || "없음"}`;
+      if (field === "상세설명") {
+        removeFieldContinuation(lines, index + 1, end);
+      }
+      return;
+    }
+  }
+}
+
+function removeFieldContinuation(lines, start, end) {
+  let deleteCount = 0;
+  for (let index = start; index < end && index < lines.length; index += 1) {
+    if (/^(판정근거|산업분류코드|산업색인명|산업분류명|차수|색인|상세설명):/.test(lines[index])) break;
+    if (/^\[(주사업|부사업1|부사업2|제외후보|판정사유|확신도)\]/.test(lines[index].trim())) break;
+    deleteCount += 1;
+  }
+  if (deleteCount > 0) lines.splice(start, deleteCount);
+}
+
+function compactDescription(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function groupRecordsByCode(records) {
@@ -381,7 +448,7 @@ function groupRecordsByCode(records) {
 
 function repairIndustrySection(lines, start, end, allByCode, candidateByCode) {
   const fieldLines = {};
-  for (let index = start + 1; index < end; index += 1) {
+  for (let index = start + 1; index < end && index < lines.length; index += 1) {
     const match = lines[index].match(/^(산업분류코드|산업색인명|산업분류명|차수|색인|상세설명):(.*)$/);
     if (match) fieldLines[match[1]] = index;
   }
@@ -439,6 +506,8 @@ function buildPrompt(activity, history, candidates) {
 추가질문 필요 여부가 '예'여도 주사업/부사업의 산업분류코드, 산업색인명, 산업분류명, 차수, 색인, 상세설명은 가장 가까운 후보로 잠정 작성하라. 불확실성은 판정근거와 확신도에 적어라.
 산업분류코드, 산업색인명, 산업분류명, 차수, 색인은 반드시 후보 JSON에 있는 값을 그대로 복사하라. 산업색인명에는 산업분류명을 복사하지 말고 후보 JSON의 산업색인명 값을 써라.
 사용자가 '공부방 운영'을 말했다면 후보 목록에 '공부방(장소만 제공)' 또는 '독서실 운영업'이 있는 경우 부사업 후보로 우선 제시하라. 교육 방식이 불명확하다는 이유만으로 해당 후보를 [제외후보]로 보내지 말라.
+사용자가 대학교·기관과 계약해 강의한다고 하면서 급여근로자가 아니고 사업자 등록, 프리랜서, 강의료, 교육용역 등 독립 수익활동임을 말하면 대학교나 학교 부설 시설로 보지 말고 독립 교육 서비스 제공자로 보라.
+사업자 등록한 계약강사가 창업·경영·사업 관련 강의를 제공하는 경우 후보에 85699 '경영관련 교육'이 있으면 우선 적용하라. '노인학교(노인대학)'은 사용자가 노인학교·노인대학 운영을 명시한 경우가 아니면 선택하지 말라.
 추가질문 필요 여부가 '아니오'이면 바로 다음 줄에 '조사표:'를 반드시 작성하라. 조사표는 [주사업]의 산업분류코드 앞 2자리 또는 앞 3자리를 기준으로 아래 조사표 기준에서 고른다.
 사용자가 본사·지사·지역본부·관리본부처럼 공장/광산/지점을 관리하는 본사 관리활동이라고 명시하면 종사자 수를 묻지 말고 본사 부호로 판정하라. 제조업 본사·지사는 71511 제조업 회사 본부, 광업 등 비제조업 본사·지사는 71519 기타 산업 회사본부를 우선 적용하고 조사표는 조사표 2로 작성하라.
 주사업 산업분류코드가 광업(05-08) 또는 제조업(10-34)이면서 본사·지사 관리활동이 아니면 조사표 2/3 대상이다. 이 경우 종사자 수가 9인 이하인지 10인 이상인지 사용자가 말하지 않았으면 조사표 2 또는 3을 임의로 고르지 말고 추가질문 필요 여부를 '예'로 하라.
@@ -459,6 +528,7 @@ ${unclassifiableMessage}
 사용자가 어떤 기업의 활동을 이야기하면 다음 형식을 정확히 지켜 답하라.
 추가질문은 판정에 필요한 핵심 정보가 빠졌을 때만 작성하라.
 주사업과 부사업은 사용자가 말한 매출 비중, 주된 활동, 반복성, 독립적 수익활동 여부를 기준으로 판단하라.
+사업자 등록한 계약강사·프리랜서 강사가 돈을 받고 강의하는 경우는 고용된 근로자가 아니라 독립 사업활동으로 보아 판정하라.
 서로 다른 활동이 2개 이상이면 주사업, 부사업1, 부사업2로 나누고 각 사업마다 투입/과정/산출을 따로 정리하라.
 단일 활동이면 [주사업]만 작성하고 [부사업1], [부사업2]에는 '없음'이라고 적어라.
 제외후보는 헷갈리지만 최종적으로 배제한 분류가 있을 때만 작성하라. 없으면 '없음'이라고 적어라.
@@ -922,6 +992,17 @@ function findForcedIndustryCandidates(records, query, extraTerms = []) {
     );
   }
 
+  if (isIndependentBusinessLecture(normalized)) {
+    addMatches((record) =>
+      record.산업분류코드 === "85699" &&
+      hasAny(normalizeText(`${record.산업색인명} ${record.색인} ${record.상세설명}`), [
+        "경영관련 교육",
+        "사무 실무교육",
+        "창의력교육"
+      ])
+    );
+  }
+
   if (hasAny(compact, ["제조", "생산", "가공", "공장", "본사", "지사", "관리활동", "관리업무"])) {
     addMatches((record) =>
       record.산업분류코드 === "71511" ||
@@ -937,6 +1018,19 @@ function findForcedIndustryCandidates(records, query, extraTerms = []) {
   }
 
   return forced;
+}
+
+function isIndependentBusinessLecture(text) {
+  const compact = normalizeText(text).replace(/\s+/g, "");
+  const lectureTerms = ["강사", "강의", "강연", "특강", "교육용역", "계약강사", "강의료"];
+  const independentTerms = ["사업자등록", "사업자", "프리랜서", "계약", "소속아냐", "소속아님", "근로자아냐", "근로자아님", "급여근로자아냐", "급여근로자아님"];
+  const businessEducationTerms = ["창업", "경영", "사업", "사무", "실무", "기업가", "스타트업"];
+
+  return (
+    hasAny(compact, lectureTerms) &&
+    hasAny(compact, independentTerms) &&
+    hasAny(compact, businessEducationTerms)
+  );
 }
 
 function mergeCandidateRecords(...groups) {
