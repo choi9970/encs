@@ -198,17 +198,21 @@ function sanitizeVisitorId(value) {
   return sanitized || `anonymous-${Date.now()}`;
 }
 
-function getKoreanDateKey(offsetDays = 0) {
-  const date = new Date(Date.now() - offsetDays * 24 * 60 * 60 * 1000);
-  const korean = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Seoul" }));
-  const year = korean.getFullYear();
-  const month = String(korean.getMonth() + 1).padStart(2, "0");
-  const day = String(korean.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function getKoreanDateKey(timestamp = Date.now()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(timestamp);
 }
 
-function getRecentDateKeys(count) {
-  return Array.from({ length: count }, (_, index) => getKoreanDateKey(index));
+function getKoreanDayStartMs(offsetDays = 0) {
+  const now = new Date();
+  const korean = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Seoul" }));
+  korean.setHours(0, 0, 0, 0);
+  korean.setDate(korean.getDate() - offsetDays);
+  return korean.getTime() - 9 * 60 * 60 * 1000;
 }
 
 export async function getAnalyticsData(options = {}) {
@@ -223,15 +227,18 @@ export async function getAnalyticsData(options = {}) {
     };
   }
 
-  const today = getKoreanDateKey();
-  const days = getRecentDateKeys(30);
-  const todayVisitors = Number(await kvCommand(["GET", analyticsKey("visitors", today)]) || 0);
-  const dailyValues = await Promise.all(days.map((day) => kvCommand(["GET", analyticsKey("visitors", day)])));
-  const monthVisitors = dailyValues.reduce((sum, value) => sum + Number(value || 0), 0);
+  const now = Date.now();
+  const todayStart = getKoreanDayStartMs(0);
+  const rollingStart = now - 30 * 24 * 60 * 60 * 1000;
+  const visitorKey = analyticsKey("visitors");
+  const [todayVisitors, monthVisitors] = await Promise.all([
+    kvCommand(["ZCOUNT", visitorKey, todayStart, now]),
+    kvCommand(["ZCOUNT", visitorKey, rollingStart, now])
+  ]);
   const data = {
     enabled: true,
-    todayVisitors,
-    monthVisitors,
+    todayVisitors: Number(todayVisitors || 0),
+    monthVisitors: Number(monthVisitors || 0),
     logRetentionDays: 3
   };
 
@@ -263,14 +270,13 @@ export async function recordVisit(body = {}) {
     };
   }
 
+  const now = Date.now();
   const visitorId = sanitizeVisitorId(body.visitorId);
-  const today = getKoreanDateKey();
-  const visitKey = analyticsKey("visitor", today, visitorId);
-  const wasNew = await kvCommand(["SET", visitKey, "1", "NX", "EX", 60 * 60 * 24 * 35]);
-  if (wasNew === "OK") {
-    await kvCommand(["INCR", analyticsKey("visitors", today)]);
-    await kvCommand(["EXPIRE", analyticsKey("visitors", today), 60 * 60 * 24 * 45]);
-  }
+  const today = getKoreanDateKey(now);
+  const visitorKey = analyticsKey("visitors");
+  const member = `${today}:${visitorId}`;
+  await kvCommand(["ZADD", visitorKey, "NX", now, member]);
+  await kvCommand(["ZREMRANGEBYSCORE", visitorKey, 0, now - 35 * 24 * 60 * 60 * 1000]);
 
   return getAnalyticsData();
 }
