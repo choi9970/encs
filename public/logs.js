@@ -26,6 +26,7 @@ logsForm.addEventListener("submit", async (event) => {
     if (!response.ok) {
       throw new Error(data.error || "로그 조회에 실패했습니다.");
     }
+    window.lastLogsStorage = data.logStorage;
     renderLogs(data.logs || []);
   } catch (error) {
     logsStatus.textContent = error.message || "로그 조회에 실패했습니다.";
@@ -33,9 +34,10 @@ logsForm.addEventListener("submit", async (event) => {
 });
 
 function renderLogs(logs) {
+  const storage = logsStorageLabel(window.lastLogsStorage);
   logsStatus.textContent = logs.length
-    ? `최근 3일 로그 ${logs.length.toLocaleString("ko-KR")}건`
-    : "최근 3일 로그가 없습니다.";
+    ? `최근 3일 로그 ${logs.length.toLocaleString("ko-KR")}건 · ${storage}`
+    : `최근 3일 로그가 없습니다. · ${storage}`;
 
   const fragment = document.createDocumentFragment();
   for (const item of logs) {
@@ -59,6 +61,12 @@ function renderLogs(logs) {
   }
 
   logsList.append(fragment);
+}
+
+function logsStorageLabel(value) {
+  if (value === "supabase") return "Supabase DB";
+  if (value === "kv") return "임시 KV 로그";
+  return "로그 저장소 확인 불가";
 }
 
 function createLogBlock(label, content) {

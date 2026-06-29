@@ -134,11 +134,8 @@ export function sendJson(res, status, data) {
 }
 
 async function recordSearchLog(entry) {
-  const storage = getAnalyticsStorage();
-  if (!storage.enabled) return;
-
   const now = Date.now();
-  const payload = JSON.stringify({
+  const payload = {
     id: entry.diagnosticId,
     createdAt: new Date(now).toISOString(),
     activity: String(entry.activity || "").slice(0, 1200),
@@ -146,9 +143,17 @@ async function recordSearchLog(entry) {
     apiKeyIndex: entry.apiKeyIndex || null,
     model: entry.model || null,
     candidateCount: entry.candidateCount || 0
-  });
+  };
 
-  await kvCommand(["ZADD", analyticsKey("logs"), now, payload]);
+  if (getSupabaseLogStorage().enabled) {
+    await insertSupabaseLog(payload);
+    await pruneSupabaseLogs(now);
+    return;
+  }
+
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) return;
+  await kvCommand(["ZADD", analyticsKey("logs"), now, JSON.stringify(payload)]);
   await pruneAnalyticsLogs(now);
 }
 
@@ -165,6 +170,117 @@ function getAnalyticsStorage() {
     url: url.replace(/\/$/, ""),
     token
   };
+}
+
+function getSupabaseLogStorage() {
+  const url = process.env.SUPABASE_URL || "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const table = process.env.SUPABASE_LOG_TABLE || "ecensus_chat_logs";
+  return {
+    enabled: Boolean(url && serviceKey),
+    url: url.replace(/\/$/, ""),
+    serviceKey,
+    table
+  };
+}
+
+async function supabaseRequest(pathname, options = {}) {
+  const storage = getSupabaseLogStorage();
+  if (!storage.enabled) return null;
+
+  const response = await fetch(`${storage.url}/rest/v1/${pathname}`, {
+    ...options,
+    headers: {
+      apikey: storage.serviceKey,
+      Authorization: `Bearer ${storage.serviceKey}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    console.error("supabase log error", response.status, text.slice(0, 500));
+    return null;
+  }
+
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
+}
+
+async function insertSupabaseLog(entry) {
+  const storage = getSupabaseLogStorage();
+  const body = {
+    diagnostic_id: entry.id,
+    created_at: entry.createdAt,
+    question: entry.activity,
+    answer: entry.answer,
+    api_key_index: entry.apiKeyIndex,
+    model: entry.model,
+    candidate_count: entry.candidateCount
+  };
+
+  await supabaseRequest(storage.table, {
+    method: "POST",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify(body)
+  });
+}
+
+async function pruneSupabaseLogs(now = Date.now()) {
+  const storage = getSupabaseLogStorage();
+  const cutoff = new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const query = `${storage.table}?created_at=lt.${encodeURIComponent(cutoff)}`;
+  await supabaseRequest(query, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" }
+  });
+}
+
+async function getSupabaseLogs(limit) {
+  const storage = getSupabaseLogStorage();
+  if (!storage.enabled) return null;
+
+  await pruneSupabaseLogs();
+  const cutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const search = new URLSearchParams({
+    select: "diagnostic_id,created_at,question,answer,api_key_index,model,candidate_count",
+    created_at: `gte.${cutoff}`,
+    order: "created_at.desc",
+    limit: String(limit)
+  });
+  const rows = await supabaseRequest(`${storage.table}?${search.toString()}`);
+  if (!Array.isArray(rows)) return [];
+
+  return rows.map((row) => ({
+    id: row.diagnostic_id,
+    createdAt: row.created_at,
+    activity: row.question,
+    answer: row.answer,
+    apiKeyIndex: row.api_key_index,
+    model: row.model,
+    candidateCount: row.candidate_count
+  }));
+}
+
+async function getSearchLogs(limit) {
+  const supabaseLogs = await getSupabaseLogs(limit);
+  if (supabaseLogs) return supabaseLogs;
+
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) return [];
+
+  await pruneAnalyticsLogs();
+  const logs = await kvCommand(["ZREVRANGE", analyticsKey("logs"), 0, limit - 1]);
+  return (Array.isArray(logs) ? logs : [])
+    .map((item) => {
+      try {
+        return JSON.parse(item);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
 }
 
 async function kvCommand(command) {
@@ -231,14 +347,19 @@ function getDailyVisitorRanges(days, now = Date.now()) {
 export async function getAnalyticsData(options = {}) {
   const storage = getAnalyticsStorage();
   if (!storage.enabled) {
-    return {
+    const data = {
       enabled: false,
       todayVisitors: null,
       monthVisitors: null,
       dailyVisitors: [],
-      logRetentionDays: 3,
-      logs: options.includeLogs ? [] : undefined
+      logRetentionDays: 3
     };
+    if (options.includeLogs) {
+      const limit = Math.max(1, Math.min(Number(options.limit || 100), 500));
+      data.logs = await getSearchLogs(limit);
+      data.logStorage = getSupabaseLogStorage().enabled ? "supabase" : "none";
+    }
+    return data;
   }
 
   const now = Date.now();
@@ -263,18 +384,9 @@ export async function getAnalyticsData(options = {}) {
   };
 
   if (options.includeLogs) {
-    await pruneAnalyticsLogs();
     const limit = Math.max(1, Math.min(Number(options.limit || 100), 500));
-    const logs = await kvCommand(["ZREVRANGE", analyticsKey("logs"), 0, limit - 1]);
-    data.logs = (Array.isArray(logs) ? logs : [])
-      .map((item) => {
-        try {
-          return JSON.parse(item);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    data.logs = await getSearchLogs(limit);
+    data.logStorage = getSupabaseLogStorage().enabled ? "supabase" : "kv";
   }
 
   return data;

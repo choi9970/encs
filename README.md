@@ -15,7 +15,27 @@ GEMINI_MODEL=gemini-2.5-flash
 
 4. Deploy를 실행합니다.
 
-산업분류표는 프로젝트 루트의 `ecensus_industry_full.json`만 사용합니다. 사용자가 화면에서 다른 JSON을 업로드하거나 API 요청으로 산업분류표를 교체할 수 없도록 구성했습니다.
+산업분류표는 `public/ecensus_industry_full.json`만 사용합니다. 사용자가 화면에서 다른 JSON을 업로드하거나 API 요청으로 산업분류표를 교체할 수 없도록 구성했습니다.
+
+## 방문 통계와 검색 로그
+
+방문자 통계는 Upstash Redis REST 환경변수를 사용합니다.
+
+```env
+KV_REST_API_URL=your_upstash_rest_url
+KV_REST_API_TOKEN=your_upstash_rest_token
+```
+
+질문·답변 로그는 Supabase에 저장합니다. Supabase SQL Editor에서 `supabase_chat_logs.sql`을 먼저 실행한 뒤 Vercel 환경변수에 아래 값을 추가합니다.
+
+```env
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+SUPABASE_LOG_TABLE=ecensus_chat_logs
+ANALYTICS_ADMIN_TOKEN=your_admin_token
+```
+
+관리자 로그 화면은 `/logs.html`입니다. 로그는 최근 3일치만 조회·보관합니다.
 
 ## 로컬 실행
 
