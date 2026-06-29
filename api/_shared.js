@@ -325,7 +325,7 @@ async function supabaseRequest(pathname, options = {}) {
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     console.error("supabase log error", response.status, text.slice(0, 500));
-    return null;
+    throw new Error(`Supabase log request failed: ${response.status}`);
   }
 
   if (response.status === 204) return null;
@@ -374,7 +374,7 @@ async function getSupabaseRestLogs(limit) {
     limit: String(limit)
   });
   const rows = await supabaseRequest(`${storage.table}?${search.toString()}`);
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return null;
 
   return rows.map((row) => ({
     id: row.diagnostic_id,
