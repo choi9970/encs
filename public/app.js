@@ -139,10 +139,10 @@ function renderVisitorChart(items) {
   }
 
   const width = 236;
-  const height = 92;
+  const height = 104;
   const padX = 8;
-  const padTop = 12;
-  const padBottom = 18;
+  const padTop = 24;
+  const padBottom = 20;
   const max = Math.max(1, ...series.map((item) => Number(item.count || 0)));
   const step = series.length > 1 ? (width - padX * 2) / (series.length - 1) : 0;
   const points = series.map((item, index) => {
@@ -158,6 +158,7 @@ function renderVisitorChart(items) {
     <svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false">
       <polygon class="chart-area" points="${area}"></polygon>
       <polyline class="chart-line" points="${polyline}"></polyline>
+      ${points.map((point) => `<text class="chart-value" x="${point.x.toFixed(1)}" y="${Math.max(10, point.y - 7).toFixed(1)}">${point.count}</text>`).join("")}
       ${points.map((point) => `<circle class="chart-dot" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${point === last ? 3 : 2}"><title>${formatShortDate(point.date)} ${point.count}명</title></circle>`).join("")}
     </svg>
   `;

@@ -245,7 +245,7 @@ export async function getAnalyticsData(options = {}) {
   const todayStart = getKoreanDayStartMs(0);
   const rollingStart = now - 30 * 24 * 60 * 60 * 1000;
   const visitorKey = analyticsKey("visitors");
-  const dailyRanges = getDailyVisitorRanges(30, now);
+  const dailyRanges = getDailyVisitorRanges(7, now);
   const [todayVisitors, monthVisitors, ...dailyCounts] = await Promise.all([
     kvCommand(["ZCOUNT", visitorKey, todayStart, now]),
     kvCommand(["ZCOUNT", visitorKey, rollingStart, now]),
