@@ -103,6 +103,13 @@ h1 {
   font-size: 13px;
 }
 
+.panel-note {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .download-link {
   display: inline-flex;
   align-items: center;

@@ -9,17 +9,22 @@ const activeApiNumber = document.querySelector("#activeApiNumber");
 const footerApiNumber = document.querySelector("#footerApiNumber");
 const charCounter = document.querySelector("#charCounter");
 const industryDownload = document.querySelector("#industryDownload");
+const todayVisitors = document.querySelector("#todayVisitors");
+const monthVisitors = document.querySelector("#monthVisitors");
+const analyticsNote = document.querySelector("#analyticsNote");
 
 const maxInputLength = 1200;
 const maxStoredMessages = 20;
 const maxHistoryMessages = 8;
 const storageKey = "ecensus_chat_messages_v1";
+const visitorStorageKey = "ecensus_visitor_id_v1";
 const history = [];
 
 renderApiNumber();
 restoreMessages();
 updateCharCounter();
 refreshStatus();
+recordVisit();
 
 activityInput.addEventListener("input", updateCharCounter);
 
@@ -88,6 +93,44 @@ async function refreshStatus() {
     industryStatus.textContent = "확인 실패";
     modelName.textContent = "확인 실패";
   }
+}
+
+async function recordVisit() {
+  try {
+    const response = await fetch("/api/analytics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visitorId: getVisitorId() })
+    });
+    const data = await response.json();
+    renderAnalytics(data);
+  } catch {
+    todayVisitors.textContent = "확인 실패";
+    monthVisitors.textContent = "확인 실패";
+    analyticsNote.textContent = "방문 통계를 불러오지 못했습니다.";
+  }
+}
+
+function renderAnalytics(data = {}) {
+  if (!data.enabled) {
+    todayVisitors.textContent = "-";
+    monthVisitors.textContent = "-";
+    analyticsNote.textContent = "통계 저장소가 아직 연결되지 않았습니다.";
+    return;
+  }
+
+  todayVisitors.textContent = formatCount(data.todayVisitors);
+  monthVisitors.textContent = formatCount(data.monthVisitors);
+  analyticsNote.textContent = "검색·답변 로그는 최근 3일만 저장합니다.";
+}
+
+function getVisitorId() {
+  const existing = localStorage.getItem(visitorStorageKey);
+  if (existing) return existing;
+
+  const generated = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(visitorStorageKey, generated);
+  return generated;
 }
 
 function formatErrorMessage(error) {
@@ -243,4 +286,9 @@ function formatBytes(bytes) {
     unit += 1;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatCount(value) {
+  const number = Number(value || 0);
+  return `${number.toLocaleString("ko-KR")}명`;
 }

@@ -57,6 +57,14 @@ export async function handleChatBody(body) {
     timeoutMs: industryResult.expanded ? 20000 : undefined
   });
   const verifiedAnswer = await verifyIndustryFields(geminiResult.text, industryResult.candidates, activity);
+  await recordSearchLog({
+    diagnosticId,
+    activity,
+    answer: verifiedAnswer,
+    apiKeyIndex: geminiResult.keyIndex,
+    model: geminiResult.model,
+    candidateCount: industryResult.candidates.length
+  });
 
   return {
     status: 200,
@@ -123,6 +131,148 @@ export function sendJson(res, status, data) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(data));
+}
+
+async function recordSearchLog(entry) {
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) return;
+
+  const now = Date.now();
+  const payload = JSON.stringify({
+    id: entry.diagnosticId,
+    createdAt: new Date(now).toISOString(),
+    activity: String(entry.activity || "").slice(0, 1200),
+    answer: String(entry.answer || "").slice(0, 6000),
+    apiKeyIndex: entry.apiKeyIndex || null,
+    model: entry.model || null,
+    candidateCount: entry.candidateCount || 0
+  });
+
+  await kvCommand(["ZADD", analyticsKey("logs"), now, payload]);
+  await pruneAnalyticsLogs(now);
+}
+
+async function pruneAnalyticsLogs(now = Date.now()) {
+  const retentionMs = 3 * 24 * 60 * 60 * 1000;
+  await kvCommand(["ZREMRANGEBYSCORE", analyticsKey("logs"), 0, now - retentionMs]);
+}
+
+function getAnalyticsStorage() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+  return {
+    enabled: Boolean(url && token),
+    url: url.replace(/\/$/, ""),
+    token
+  };
+}
+
+async function kvCommand(command) {
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) return null;
+
+  const response = await fetch(storage.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${storage.token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(command)
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) {
+    console.error("analytics kv error", data.error || response.statusText);
+    return null;
+  }
+
+  return data.result ?? null;
+}
+
+function analyticsKey(...parts) {
+  return ["encs", "analytics", ...parts].join(":");
+}
+
+function sanitizeVisitorId(value) {
+  const sanitized = String(value || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
+  return sanitized || `anonymous-${Date.now()}`;
+}
+
+function getKoreanDateKey(offsetDays = 0) {
+  const date = new Date(Date.now() - offsetDays * 24 * 60 * 60 * 1000);
+  const korean = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Seoul" }));
+  const year = korean.getFullYear();
+  const month = String(korean.getMonth() + 1).padStart(2, "0");
+  const day = String(korean.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getRecentDateKeys(count) {
+  return Array.from({ length: count }, (_, index) => getKoreanDateKey(index));
+}
+
+export async function getAnalyticsData(options = {}) {
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) {
+    return {
+      enabled: false,
+      todayVisitors: null,
+      monthVisitors: null,
+      logRetentionDays: 3,
+      logs: options.includeLogs ? [] : undefined
+    };
+  }
+
+  const today = getKoreanDateKey();
+  const days = getRecentDateKeys(30);
+  const todayVisitors = Number(await kvCommand(["GET", analyticsKey("visitors", today)]) || 0);
+  const dailyValues = await Promise.all(days.map((day) => kvCommand(["GET", analyticsKey("visitors", day)])));
+  const monthVisitors = dailyValues.reduce((sum, value) => sum + Number(value || 0), 0);
+  const data = {
+    enabled: true,
+    todayVisitors,
+    monthVisitors,
+    logRetentionDays: 3
+  };
+
+  if (options.includeLogs) {
+    await pruneAnalyticsLogs();
+    const limit = Math.max(1, Math.min(Number(options.limit || 100), 500));
+    const logs = await kvCommand(["ZREVRANGE", analyticsKey("logs"), 0, limit - 1]);
+    data.logs = (Array.isArray(logs) ? logs : [])
+      .map((item) => {
+        try {
+          return JSON.parse(item);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  return data;
+}
+
+export async function recordVisit(body = {}) {
+  const storage = getAnalyticsStorage();
+  if (!storage.enabled) {
+    return {
+      enabled: false,
+      todayVisitors: null,
+      monthVisitors: null
+    };
+  }
+
+  const visitorId = sanitizeVisitorId(body.visitorId);
+  const today = getKoreanDateKey();
+  const visitKey = analyticsKey("visitor", today, visitorId);
+  const wasNew = await kvCommand(["SET", visitKey, "1", "NX", "EX", 60 * 60 * 24 * 35]);
+  if (wasNew === "OK") {
+    await kvCommand(["INCR", analyticsKey("visitors", today)]);
+    await kvCommand(["EXPIRE", analyticsKey("visitors", today), 60 * 60 * 24 * 45]);
+  }
+
+  return getAnalyticsData();
 }
 
 async function callGemini(apiKeys, prompt, diagnosticId, options = {}) {

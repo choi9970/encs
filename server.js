@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getStatusData, handleChatBody, readJsonRequest, sendJson } from "./api/_shared.js";
+import { getAnalyticsData, getStatusData, handleChatBody, readJsonRequest, recordVisit, sendJson } from "./api/_shared.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -19,6 +19,24 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/status") {
       return sendJson(res, 200, await getStatusData());
+    }
+
+    if (url.pathname === "/api/analytics") {
+      if (req.method === "POST") {
+        return sendJson(res, 200, await recordVisit(await readJsonRequest(req, 64 * 1024)));
+      }
+
+      if (req.method === "GET") {
+        const wantsLogs = url.searchParams.get("logs") === "1";
+        if (wantsLogs && !isValidAdminToken(url.searchParams.get("token"))) {
+          return sendJson(res, 403, { error: "로그 조회 권한이 없습니다." });
+        }
+
+        return sendJson(res, 200, await getAnalyticsData({
+          includeLogs: wantsLogs,
+          limit: Number(url.searchParams.get("limit") || 100)
+        }));
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/api/chat") {
@@ -72,6 +90,11 @@ async function serveStatic(pathname, res) {
   } catch {
     sendJson(res, 404, { error: "Not found" });
   }
+}
+
+function isValidAdminToken(token) {
+  const expected = process.env.ANALYTICS_ADMIN_TOKEN || "";
+  return Boolean(expected && token && token === expected);
 }
 
 function loadEnv(envPath) {
