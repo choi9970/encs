@@ -94,6 +94,14 @@ h1 {
   background: var(--panel);
 }
 
+.sidebar-details {
+  display: contents;
+}
+
+.sidebar-toggle {
+  display: none;
+}
+
 .status-row {
   display: flex;
   align-items: center;
@@ -475,6 +483,40 @@ input:focus-visible {
     gap: 14px;
     padding: 18px 16px 14px;
     background: #ffffff;
+  }
+
+  .sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 54px;
+    width: 100%;
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    background: #ffffff;
+    color: var(--accent-strong);
+    font-size: 18px;
+    font-weight: 900;
+  }
+
+  .sidebar-toggle::after {
+    content: "⌄";
+    margin-left: 8px;
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .sidebar-toggle[aria-expanded="true"]::after {
+    content: "⌃";
+  }
+
+  .sidebar-details {
+    display: none;
+    gap: 14px;
+  }
+
+  .sidebar-details.is-open {
+    display: grid;
   }
 
   h1 {

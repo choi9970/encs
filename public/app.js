@@ -15,6 +15,8 @@ const analyticsNote = document.querySelector("#analyticsNote");
 const visitorChart = document.querySelector("#visitorChart");
 const chartStartDate = document.querySelector("#chartStartDate");
 const chartEndDate = document.querySelector("#chartEndDate");
+const sidebarToggle = document.querySelector("#sidebarToggle");
+const sidebarDetails = document.querySelector("#sidebarDetails");
 
 const maxInputLength = 1200;
 const maxStoredMessages = 20;
@@ -30,6 +32,11 @@ refreshStatus();
 recordVisit();
 
 activityInput.addEventListener("input", updateCharCounter);
+
+sidebarToggle.addEventListener("click", () => {
+  const isExpanded = sidebarToggle.getAttribute("aria-expanded") === "true";
+  setSidebarExpanded(!isExpanded);
+});
 
 activityInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -226,6 +233,12 @@ function renderApiNumber() {
       : "로컬 개발";
   apiNumber.textContent = label;
   footerApiNumber.textContent = label;
+}
+
+function setSidebarExpanded(isExpanded) {
+  sidebarToggle.setAttribute("aria-expanded", String(isExpanded));
+  sidebarToggle.textContent = isExpanded ? "상태 정보 접기" : "상태 정보 보기";
+  sidebarDetails.classList.toggle("is-open", isExpanded);
 }
 
 function restoreMessages() {
